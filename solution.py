@@ -1,6 +1,8 @@
 """Solution."""
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
+from scikit_learn.gaussian_process import GaussianProcessRegressor
+from scikit_learn.gaussian_process.kernels import  Matern, WhiteKernel, ConstantKernel
 # import additional ...
 
 
@@ -15,6 +17,20 @@ class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration."""
         # TODO: Define all relevant class members for your BO algorithm here.
+        x_seen = []
+        f_seen = []
+        v_seen = []
+        sigma_f = 0.15
+        nu_f = 2.5
+        lenghtscale_f = 10
+        sigma_v = 0.0001
+        f_kernel = Matern(length_scale=lenghtscale_f, nu=nu_f) + WhiteKernel(noise_level=sigma_f)
+        nu_v = 2.5
+        lenghtscale_v = 10
+        prior_mean_v = 4
+        v_kernel = Matern(length_scale=lenghtscale_v, nu=nu_v) + WhiteKernel(noise_level=sigma_v) + ConstantKernel(constant_value=prior_mean_v)
+        f_model = None
+        v_model = None
         pass
 
     def next_recommendation(self):
