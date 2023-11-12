@@ -1,14 +1,16 @@
 """Solution."""
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
-from scikit_learn.gaussian_process import GaussianProcessRegressor
-from scikit_learn.gaussian_process.kernels import  Matern, WhiteKernel, ConstantKernel
+from scipy.stats import norm
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import  Matern, WhiteKernel, ConstantKernel
 # import additional ...
 
 
 # global variables
 DOMAIN = np.array([[0, 10]])  # restrict \theta in [0, 10]
 SAFETY_THRESHOLD = 4  # threshold, upper bound of SA
+MAX_OPTIMIZE_ITERS = 10
 
 
 # TODO: implement a self-contained solution in the BO_algo class.
@@ -17,21 +19,25 @@ class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration."""
         # TODO: Define all relevant class members for your BO algorithm here.
-        x_seen = []
-        f_seen = []
-        v_seen = []
+        self.__x_seen = []
+        self.__f_seen = []
+        self.__v_seen = []
         sigma_f = 0.15
         nu_f = 2.5
-        lenghtscale_f = 10
+        lenghtscale_f = 1
         sigma_v = 0.0001
         f_kernel = Matern(length_scale=lenghtscale_f, nu=nu_f) + WhiteKernel(noise_level=sigma_f)
         nu_v = 2.5
-        lenghtscale_v = 10
+        lenghtscale_v = 1
         prior_mean_v = 4
         v_kernel = Matern(length_scale=lenghtscale_v, nu=nu_v) + WhiteKernel(noise_level=sigma_v) + ConstantKernel(constant_value=prior_mean_v)
-        f_model = None
-        v_model = None
-        pass
+        self.f_model = GaussianProcessRegressor(kernel=f_kernel)
+        self.v_model = GaussianProcessRegressor(kernel=v_kernel)
+        self.__std_af_fac = 0.02
+        self.__std_af_fac_v = 0.001
+
+        self.__expected_contraint_hold_probability = 0.95
+        self.__f_max_constraint_holds = None
 
     def next_recommendation(self):
         """
@@ -46,8 +52,9 @@ class BO_algo():
         # using functions f and v.
         # In implementing this function, you may use
         # optimize_acquisition_function() defined below.
-
-        raise NotImplementedError
+        x_next = self.optimize_acquisition_function()
+        x_next = np.array(np.clip(x_next, *DOMAIN[0])).reshape(1, 1)
+        return x_next
 
     def optimize_acquisition_function(self):
         """Optimizes the acquisition function defined below (DO NOT MODIFY).
@@ -93,9 +100,19 @@ class BO_algo():
             shape (N, 1)
             Value of the acquisition function at x
         """
-        x = np.atleast_2d(x)
         # TODO: Implement the acquisition function you want to optimize.
-        raise NotImplementedError
+
+        x = np.atleast_2d(x)
+        f_mean, f_std = self.f_model.predict(x, return_std=True)
+        v_mean, v_std = self.v_model.predict(x, return_std=True)
+        v_margin = self.__get_v_margin(x)
+        v_constraint_probab = norm.cdf(v_margin, loc=v_mean, scale=v_std)
+        if v_margin < SAFETY_THRESHOLD:
+            af_value = (f_mean - self.__f_max_constraint_holds + self.__std_af_fac * f_std + 1) * v_constraint_probab
+        else:
+            af_value = v_constraint_probab
+        return af_value
+
 
     def add_data_point(self, x: float, f: float, v: float):
         """
@@ -110,8 +127,25 @@ class BO_algo():
         v: float
             SA constraint func
         """
-        # TODO: Add the observed data {x, f, v} to your model.
-        raise NotImplementedError
+        self.__x_seen.append(x)
+        self.__f_seen.append(f)
+        self.__v_seen.append(v)
+        x = np.atleast_2d(x)
+        f = np.atleast_2d(f)
+        v = np.atleast_2d(v)
+        self.f_model.fit(x, f)
+        self.v_model.fit(x, v)
+
+        if v > SAFETY_THRESHOLD:
+            self.__x_unsafe.append(x)
+        
+        #add f_max constraint if f is larger than f_max and constraint is satisfied
+        f_mean, f_std = self.f_model.predict(x, return_std=True)
+        v_margin = self.__get_v_margin(x)
+        if v_margin < SAFETY_THRESHOLD:
+            if self.__f_max_constraint_holds is None or f_mean > self.__f_max_constraint_holds:
+                self.__f_max_constraint_holds = f_mean
+
 
     def get_solution(self):
         """
@@ -123,7 +157,14 @@ class BO_algo():
             the optimal solution of the problem
         """
         # TODO: Return your predicted safe optimum of f.
-        raise NotImplementedError
+        for i in range(MAX_OPTIMIZE_ITERS):
+            x_opt = self.optimize_acquisition_function()
+            x_opt = np.array(np.clip(x_opt, *DOMAIN[0])).reshape(1, 1)
+            f_mean, f_std = self.f_model.predict(x_opt, return_std=True)
+            v_margin = self.__get_v_margin(x_opt)
+            if v_margin < SAFETY_THRESHOLD or i == MAX_OPTIMIZE_ITERS - 1:
+                return x_opt
+        
 
     def plot(self, plot_recommendation: bool = True):
         """Plot objective and constraint posterior for debugging (OPTIONAL).
@@ -134,6 +175,24 @@ class BO_algo():
             Plots the recommended point if True.
         """
         pass
+
+    def __get_v_margin(self, x: float):
+        """Compute the margin of the constraint at x.
+
+        Parameters
+        ----------
+        x: float
+            x in domain of v
+
+        Returns
+        ------
+        margin: float
+            Margin of the constraint at x
+        """
+        x = np.atleast_2d(x)
+        v_mean, v_std = self.v_model.predict(x, return_std=True)
+        v_margin = norm.ppf(self.__expected_contraint_hold_probability, loc=v_mean, scale=v_std)
+        return v_margin
 
 
 # ---
@@ -191,8 +250,8 @@ def main():
             f"shape (1, {DOMAIN.shape[0]})"
 
         # Obtain objective and constraint observation
-        obj_val = f(x) + np.randn()
-        cost_val = v(x) + np.randn()
+        obj_val = f(x) + np.random.randn()
+        cost_val = v(x) + np.random.randn()
         agent.add_data_point(x, obj_val, cost_val)
 
     # Validate solution
