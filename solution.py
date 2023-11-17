@@ -10,7 +10,7 @@ from sklearn.gaussian_process.kernels import  Matern, WhiteKernel, ConstantKerne
 # global variables
 DOMAIN = np.array([[0, 10]])  # restrict \theta in [0, 10]
 SAFETY_THRESHOLD = 4  # threshold, upper bound of SA
-MAX_OPTIMIZE_ITERS = 10
+MAX_OPTIMIZE_ITERS = 100
 
 
 # TODO: implement a self-contained solution in the BO_algo class.
@@ -22,22 +22,24 @@ class BO_algo():
         self.__x_seen = []
         self.__f_seen = []
         self.__v_seen = []
-        sigma_f = 0.15
+        sigma_f = 0.5
         nu_f = 2.5
-        lenghtscale_f = 1
-        sigma_v = 0.0001
+        lenghtscale_f = 0.5
+        sigma_v = 0.5
         f_kernel = Matern(length_scale=lenghtscale_f, nu=nu_f) + WhiteKernel(noise_level=sigma_f)
         nu_v = 2.5
-        lenghtscale_v = 1
+        lenghtscale_v = 0.5
         prior_mean_v = 4
         v_kernel = Matern(length_scale=lenghtscale_v, nu=nu_v) + WhiteKernel(noise_level=sigma_v) + ConstantKernel(constant_value=prior_mean_v)
         self.f_model = GaussianProcessRegressor(kernel=f_kernel)
         self.v_model = GaussianProcessRegressor(kernel=v_kernel)
-        self.__std_af_fac = 0.02
-        self.__std_af_fac_v = 0.001
+        self.__std_af_fac = 0.001
+        self.__std_af_fac_v = 0.0001
+        self.__mean_af_fac = 0.05
 
-        self.__expected_contraint_hold_probability = 0.95
+        self.__expected_constraint_hold_probability = 0.95
         self.__f_max_constraint_holds = None
+        self.__critical_v_x = []
 
     def next_recommendation(self):
         """
@@ -52,7 +54,8 @@ class BO_algo():
         # using functions f and v.
         # In implementing this function, you may use
         # optimize_acquisition_function() defined below.
-        x_next = self.optimize_acquisition_function()
+        x_next = self.optimize_acquisition_function()      
+
         x_next = np.array(np.clip(x_next, *DOMAIN[0])).reshape(1, 1)
         return x_next
 
@@ -106,9 +109,9 @@ class BO_algo():
         f_mean, f_std = self.f_model.predict(x, return_std=True)
         v_mean, v_std = self.v_model.predict(x, return_std=True)
         v_margin = self.__get_v_margin(x)
-        v_constraint_probab = norm.cdf(v_margin, loc=v_mean, scale=v_std)
+        v_constraint_probab = norm.cdf(SAFETY_THRESHOLD, loc=v_mean, scale=v_std)
         if v_margin < SAFETY_THRESHOLD:
-            af_value = (f_mean - self.__f_max_constraint_holds + self.__std_af_fac * f_std + 1) * v_constraint_probab
+            af_value = ((f_mean - self.__f_max_constraint_holds) * self.__mean_af_fac + self.__std_af_fac * f_std + 1) * v_constraint_probab
         else:
             af_value = v_constraint_probab
         return af_value
@@ -127,17 +130,20 @@ class BO_algo():
         v: float
             SA constraint func
         """
+
+        if v > SAFETY_THRESHOLD:
+            self.__critical_v_x.append(x)
+
         self.__x_seen.append(x)
         self.__f_seen.append(f)
         self.__v_seen.append(v)
         x = np.atleast_2d(x)
         f = np.atleast_2d(f)
         v = np.atleast_2d(v)
-        self.f_model.fit(x, f)
-        self.v_model.fit(x, v)
+        self.f_model.fit(np.array(self.__x_seen).reshape(-1, 1), np.array(self.__f_seen).reshape(-1, 1))
+        self.v_model.fit(np.array(self.__x_seen).reshape(-1, 1), np.array(self.__v_seen).reshape(-1, 1))
 
-        if v > SAFETY_THRESHOLD:
-            self.__x_unsafe.append(x)
+        #print(f"x: {x}, v: {v}, f: {f}")
         
         #add f_max constraint if f is larger than f_max and constraint is satisfied
         f_mean, f_std = self.f_model.predict(x, return_std=True)
@@ -191,7 +197,7 @@ class BO_algo():
         """
         x = np.atleast_2d(x)
         v_mean, v_std = self.v_model.predict(x, return_std=True)
-        v_margin = norm.ppf(self.__expected_contraint_hold_probability, loc=v_mean, scale=v_std)
+        v_margin = norm.ppf(self.__expected_constraint_hold_probability, loc=v_mean, scale=v_std)
         return v_margin
 
 
