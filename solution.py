@@ -33,13 +33,14 @@ class BO_algo():
         v_kernel = Matern(length_scale=lenghtscale_v, nu=nu_v) + WhiteKernel(noise_level=sigma_v) + ConstantKernel(constant_value=prior_mean_v)
         self.f_model = GaussianProcessRegressor(kernel=f_kernel)
         self.v_model = GaussianProcessRegressor(kernel=v_kernel)
-        self.__std_af_fac = 0.001
+        self.__std_af_fac = 0.0005
         self.__std_af_fac_v = 0.0001
-        self.__mean_af_fac = 0.05
+        self.__mean_af_fac = 0.1
 
-        self.__expected_constraint_hold_probability = 0.95
+        self.__expected_constraint_hold_probability = 0.94
         self.__f_max_constraint_holds = None
         self.__critical_v_x = []
+        self.__critical_v_x_min_dist = 2
 
     def next_recommendation(self):
         """
@@ -165,10 +166,23 @@ class BO_algo():
         # TODO: Return your predicted safe optimum of f.
         for i in range(MAX_OPTIMIZE_ITERS):
             x_opt = self.optimize_acquisition_function()
+
             x_opt = np.array(np.clip(x_opt, *DOMAIN[0])).reshape(1, 1)
             f_mean, f_std = self.f_model.predict(x_opt, return_std=True)
             v_margin = self.__get_v_margin(x_opt)
-            if v_margin < SAFETY_THRESHOLD or i == MAX_OPTIMIZE_ITERS - 1:
+            if v_margin < SAFETY_THRESHOLD:
+                if i != MAX_OPTIMIZE_ITERS - 1:
+                #check if x_opt is to near to a critical value
+                    x_opt_is_crit = False
+                    for x_crit in self.__critical_v_x:
+                        if abs(x_crit - x_opt) < self.__critical_v_x_min_dist:
+                            x_opt_is_crit = True
+                    if x_opt_is_crit:
+                        continue
+
+                return x_opt
+                
+            if i == MAX_OPTIMIZE_ITERS - 1:
                 return x_opt
         
 
